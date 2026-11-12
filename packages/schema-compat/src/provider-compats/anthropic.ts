@@ -167,8 +167,28 @@ export class AnthropicSchemaCompatLayer extends SchemaCompatLayer {
     } else if (isNumberSchema(schema)) {
       this.defaultNumberHandler(schema);
     } else if (isStringSchema(schema)) {
-      this.defaultStringHandler(schema);
+      this.#handleStringSchema(schema);
     }
+  }
+
+  /**
+   * Claude 3.5 Haiku ignores string constraints, so all of them move into the description.
+   * Newer Claude models enforce `pattern` (in tool use and structured outputs), so a
+   * developer-written `pattern` stays a real constraint. `minLength`/`maxLength` still move
+   * into the description because Anthropic structured outputs reject them.
+   */
+  #handleStringSchema(schema: JSONSchema7): void {
+    // With a `format`, the `pattern` is generated alongside it and is handled with the format.
+    const keptPattern = !this.#isHaikuModel() && schema.format === undefined ? schema.pattern : undefined;
+
+    if (keptPattern === undefined) {
+      this.defaultStringHandler(schema);
+      return;
+    }
+
+    delete schema.pattern;
+    this.defaultStringHandler(schema);
+    schema.pattern = keptPattern;
   }
 
   postProcessJSONNode(schema: JSONSchema7): void {
