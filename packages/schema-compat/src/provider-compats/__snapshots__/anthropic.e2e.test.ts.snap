@@ -209,8 +209,8 @@ constraints: minimum length 5",
       "type": "string",
     },
     "stringRegex": {
-      "description": "a valid sample string that satisfies the regex
-constraints: input must match this regex ^test-",
+      "description": "a valid sample string that satisfies the regex",
+      "pattern": "^test-",
       "type": "string",
     },
     "stringUrl": {

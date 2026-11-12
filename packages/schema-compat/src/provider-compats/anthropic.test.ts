@@ -127,6 +127,97 @@ describe('AnthropicSchemaCompatLayer', () => {
     });
   });
 
+  describe('string pattern constraints', () => {
+    const orderSchema = z.object({
+      order_id: z.string().regex(/^ORD-[0-9]{6}$/),
+    });
+
+    it.each(['claude-3-5-sonnet', 'claude-sonnet-4-5', 'claude-opus-4-1', 'claude-haiku-4-5'])(
+      'keeps a regex pattern as a JSON Schema constraint for %s',
+      modelId => {
+        const layer = new AnthropicSchemaCompatLayer({ ...modelInfo, modelId });
+        const jsonSchema = layer.processToJSONSchema(orderSchema);
+
+        expect(jsonSchema.properties?.order_id).toEqual({ type: 'string', pattern: '^ORD-[0-9]{6}$' });
+      },
+    );
+
+    it('keeps the pattern while still moving unsupported length constraints into the description', () => {
+      const schema = z.object({
+        code: z
+          .string()
+          .regex(/^[A-Z]+$/)
+          .min(2)
+          .max(8)
+          .describe('Uppercase code'),
+      });
+      const jsonSchema = new AnthropicSchemaCompatLayer(modelInfo).processToJSONSchema(schema);
+
+      expect(jsonSchema.properties?.code).toEqual({
+        type: 'string',
+        pattern: '^[A-Z]+$',
+        description: 'Uppercase code\nconstraints: minimum length 2, maximum length 8',
+      });
+    });
+
+    it('keeps the pattern on raw JSON Schema tool inputs', () => {
+      const jsonSchema = new AnthropicSchemaCompatLayer(modelInfo).processToJSONSchema({
+        type: 'object',
+        properties: { order_id: { type: 'string', pattern: '^ORD-[0-9]{6}$', description: 'Order id' } },
+        required: ['order_id'],
+      });
+
+      expect(jsonSchema.properties?.order_id).toEqual({
+        type: 'string',
+        pattern: '^ORD-[0-9]{6}$',
+        description: 'Order id',
+      });
+    });
+
+    it('keeps the pattern in nested, optional and nullable fields', () => {
+      const schema = z.object({
+        items: z.array(z.object({ sku: z.string().regex(/^SKU-/) })),
+        coupon: z.string().regex(/^CPN-/).optional(),
+        note: z.string().regex(/^N-/).nullable(),
+      });
+      const schemaJson = JSON.stringify(new AnthropicSchemaCompatLayer(modelInfo).processToJSONSchema(schema));
+
+      expect(schemaJson).toContain('"pattern":"^SKU-"');
+      expect(schemaJson).toContain('"pattern":"^CPN-"');
+      expect(schemaJson).toContain('"pattern":"^N-"');
+      expect(schemaJson).not.toContain('must match this regex');
+    });
+
+    it('leaves format-backed strings unchanged', () => {
+      const jsonSchema = new AnthropicSchemaCompatLayer(modelInfo).processToJSONSchema(z.object({ email: z.email() }));
+
+      expect(jsonSchema.properties?.email).toEqual({ type: 'string', description: 'constraints: a valid email' });
+    });
+
+    it('sends the pattern to the model and still rejects non-matching tool input', async () => {
+      const compatSchema = new AnthropicSchemaCompatLayer(modelInfo).processToCompatSchema(orderSchema);
+      const jsonSchema = standardSchemaToJSONSchema(compatSchema) as { properties: Record<string, unknown> };
+
+      expect(jsonSchema.properties.order_id).toEqual({ type: 'string', pattern: '^ORD-[0-9]{6}$' });
+
+      const valid = await compatSchema['~standard'].validate({ order_id: 'ORD-123456' });
+      expect(valid).toEqual({ value: { order_id: 'ORD-123456' } });
+
+      const invalid = await compatSchema['~standard'].validate({ order_id: 'ORD-12345X' });
+      expect('issues' in invalid).toBe(true);
+    });
+
+    it('still moves the pattern into the description for claude-3.5-haiku', () => {
+      const layer = new AnthropicSchemaCompatLayer({ ...modelInfo, modelId: 'claude-3.5-haiku-20241022' });
+      const jsonSchema = layer.processToJSONSchema(orderSchema);
+
+      expect(jsonSchema.properties?.order_id).toEqual({
+        type: 'string',
+        description: 'constraints: input must match this regex ^ORD-[0-9]{6}$',
+      });
+    });
+  });
+
   describe('Haiku string length constraints', () => {
     const haikuModelInfo: ModelInformation = {
       provider: 'anthropic',
